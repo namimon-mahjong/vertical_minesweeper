@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, type CSSProperties } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
@@ -12,6 +12,9 @@ export interface ThreeBoardCell {
   x: number;
   y: number;
   z: number;
+  /** Zero-based board layer: 0 is the bottom layer. */
+  layer: number;
+  mine?: boolean;
 }
 
 /** Surface coordinates are the exact world-space point on which the number sits. */
@@ -21,6 +24,8 @@ export interface ThreeBoardNumberSurface {
   y: number;
   z: number;
   value: number;
+  /** Zero-based board layer: 0 is the bottom layer. */
+  layer: number;
 }
 
 /** footY is the world-space height of the surface supporting the player. */
@@ -35,7 +40,11 @@ export interface ThreeBoardProps {
   solidCells: readonly ThreeBoardCell[];
   flaggedCells: readonly ThreeBoardCell[];
   numberSurfaces: readonly ThreeBoardNumberSurface[];
+  /** Shows the mine symbol on every remaining mine after a failed mission. */
+  revealMineLocations?: boolean;
   player: ThreeBoardPlayer;
+  cameraMode: ThreeBoardCameraMode;
+  onCameraModeChange: (mode: ThreeBoardCameraMode) => void;
   validTargetIds: readonly string[] | ReadonlySet<string>;
   activeTargetId: string | null;
   onDig: (id: string) => void;
@@ -45,25 +54,42 @@ export interface ThreeBoardProps {
   style?: CSSProperties;
 }
 
-type CameraMode = "vertical" | "oblique";
+export type ThreeBoardCameraMode = "oblique" | "firstPerson";
+
+interface DebrisParticle {
+  mesh: THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
+  velocity: THREE.Vector3;
+  angularVelocity: THREE.Vector3;
+  age: number;
+  lifetime: number;
+  initialScale: number;
+}
 
 interface Runtime {
   scene: THREE.Scene;
   renderer: THREE.WebGLRenderer;
-  verticalCamera: THREE.OrthographicCamera;
   obliqueCamera: THREE.OrthographicCamera;
-  activeCamera: THREE.OrthographicCamera;
+  firstPersonCamera: THREE.PerspectiveCamera;
+  activeCamera: THREE.Camera;
   controls: OrbitControls;
   raycaster: THREE.Raycaster;
   pointer: THREE.Vector2;
+  groundGroup: THREE.Group;
   solidGroup: THREE.Group;
+  debrisGroup: THREE.Group;
   flagGroup: THREE.Group;
   numberGroup: THREE.Group;
   playerGroup: THREE.Group;
   blockGeometry: THREE.BoxGeometry;
+  blockEdgeGeometry: THREE.EdgesGeometry;
+  debrisGeometry: THREE.BoxGeometry;
+  debrisMaterials: THREE.MeshStandardMaterial[];
+  debris: DebrisParticle[];
+  mineMarkerGeometry: THREE.PlaneGeometry;
   cellMeshes: Map<string, THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>>;
   targetMeshes: Map<string, THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>>;
   validTargets: Set<string>;
+  flaggedIds: Set<string>;
   activeTargetId: string | null;
   center: THREE.Vector3;
   span: number;
@@ -74,11 +100,12 @@ interface Runtime {
 
 const COLORS = {
   block: 0x41677d,
-  blockEdge: 0x183342,
   valid: 0xe3b64c,
   validEmissive: 0x6b4606,
   active: 0x55ead2,
   activeEmissive: 0x0b685e,
+  flaggedBlock: 0x9b2948,
+  flaggedEmissive: 0x5d102a,
   player: 0x68e1cf,
   playerDark: 0x123d4b,
   flag: 0xff5274,
@@ -182,16 +209,7 @@ function fitRuntime(runtime: Runtime, cells: readonly ThreeBoardCell[]): void {
 
   runtime.center.set((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
   runtime.span = Math.max(width + 2.4, depth + 2.4, height * 1.25 + 3, 7);
-  setFrustum(runtime.verticalCamera, runtime.aspect, runtime.span);
   setFrustum(runtime.obliqueCamera, runtime.aspect, runtime.span);
-
-  runtime.verticalCamera.position.set(
-    runtime.center.x,
-    runtime.center.y + runtime.span * 2.5,
-    runtime.center.z,
-  );
-  runtime.verticalCamera.up.set(0, 0, -1);
-  runtime.verticalCamera.lookAt(runtime.center);
 
   runtime.obliqueCamera.position.copy(runtime.center).add(
     new THREE.Vector3(runtime.span * 0.78, runtime.span * 0.88, runtime.span * 0.92),
@@ -203,30 +221,77 @@ function fitRuntime(runtime: Runtime, cells: readonly ThreeBoardCell[]): void {
   runtime.fitted = true;
 }
 
+function buildGround(runtime: Runtime, cells: readonly ThreeBoardCell[]): void {
+  if (runtime.groundGroup.children.length > 0 || cells.length === 0) return;
+
+  const minX = Math.min(...cells.map((cell) => cell.x));
+  const maxX = Math.max(...cells.map((cell) => cell.x));
+  const minZ = Math.min(...cells.map((cell) => cell.z));
+  const maxZ = Math.max(...cells.map((cell) => cell.z));
+  const width = maxX - minX + 3;
+  const depth = maxZ - minZ + 3;
+  const centerX = (minX + maxX) / 2;
+  const centerZ = (minZ + maxZ) / 2;
+
+  const geometry = new THREE.BoxGeometry(width, 0.18, depth);
+  const slab = new THREE.Mesh(
+    geometry,
+    new THREE.MeshStandardMaterial({
+      color: 0x0b2836,
+      emissive: 0x071a24,
+      emissiveIntensity: 0.18,
+      roughness: 0.92,
+      metalness: 0.02,
+    }),
+  );
+  // The slab top is y=0, flush with the underside of the bottom blocks.
+  slab.position.set(centerX, -0.09, centerZ);
+  const rim = new THREE.LineSegments(
+    new THREE.EdgesGeometry(geometry),
+    new THREE.LineBasicMaterial({ color: LAYER_COLORS[0], transparent: true, opacity: 0.7 }),
+  );
+  slab.add(rim);
+  runtime.groundGroup.add(slab);
+
+  const gridSize = Math.max(width, depth);
+  const grid = new THREE.GridHelper(gridSize, Math.round(gridSize), 0x4dd7ff, 0x173f4e);
+  grid.position.set(centerX, 0.003, centerZ);
+  runtime.groundGroup.add(grid);
+}
+
 function applyCellAppearance(runtime: Runtime): void {
   runtime.targetMeshes.clear();
   for (const [id, mesh] of runtime.cellMeshes) {
     const valid = runtime.validTargets.has(id);
     const active = valid && runtime.activeTargetId === id;
+    const flagged = runtime.flaggedIds.has(id);
     const material = mesh.material;
 
-    material.color.setHex(active ? COLORS.active : valid ? COLORS.valid : COLORS.block);
-    material.emissive.setHex(
-      active ? COLORS.activeEmissive : valid ? COLORS.validEmissive : 0x000000,
+    material.color.setHex(
+      flagged ? COLORS.flaggedBlock : active ? COLORS.active : valid ? COLORS.valid : COLORS.block,
     );
-    material.emissiveIntensity = active ? 0.72 : valid ? 0.46 : 0;
+    material.emissive.setHex(
+      flagged
+        ? COLORS.flaggedEmissive
+        : active
+          ? COLORS.activeEmissive
+          : valid
+            ? COLORS.validEmissive
+            : 0x000000,
+    );
+    material.emissiveIntensity = flagged ? 0.62 : active ? 0.72 : valid ? 0.46 : 0;
     mesh.scale.setScalar(active ? 1.045 : valid ? 1.018 : 1);
     if (valid) runtime.targetMeshes.set(id, mesh);
   }
 }
 
-function numberColor(value: number): string {
-  return ["#d8e8ee", "#63c5ff", "#69e2a2", "#ff7979", "#a88cff", "#ffba67", "#62dbdd", "#f4f7fa", "#c8d3d8"][
-    Math.max(0, Math.min(8, value))
-  ];
+const LAYER_COLORS = ["#4dd7ff", "#f6c453", "#ff6f91"] as const;
+
+function layerColor(layer: number): (typeof LAYER_COLORS)[number] {
+  return LAYER_COLORS[Math.max(0, Math.min(LAYER_COLORS.length - 1, layer))];
 }
 
-function makeNumberTexture(value: number): THREE.CanvasTexture {
+function makeNumberTexture(value: number, layer: number): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   canvas.width = 128;
   canvas.height = 128;
@@ -239,9 +304,10 @@ function makeNumberTexture(value: number): THREE.CanvasTexture {
   context.fillStyle = "rgba(3, 14, 24, .78)";
   context.fill();
   context.lineWidth = 5;
-  context.strokeStyle = "rgba(226, 240, 246, .72)";
+  const markerColor = layerColor(layer);
+  context.strokeStyle = markerColor;
   context.stroke();
-  context.fillStyle = numberColor(value);
+  context.fillStyle = markerColor;
   context.font = "900 72px Arial, sans-serif";
   context.textAlign = "center";
   context.textBaseline = "middle";
@@ -254,12 +320,132 @@ function makeNumberTexture(value: number): THREE.CanvasTexture {
   return texture;
 }
 
+function spawnBlockDebris(runtime: Runtime, cell: ThreeBoardCell): void {
+  const material = runtime.debrisMaterials[
+    Math.max(0, Math.min(runtime.debrisMaterials.length - 1, cell.layer))
+  ];
+  for (let index = 0; index < 18; index += 1) {
+    const mesh = new THREE.Mesh(runtime.debrisGeometry, material);
+    mesh.position.set(
+      cell.x + (Math.random() - 0.5) * 0.58,
+      cell.y + (Math.random() - 0.5) * 0.58,
+      cell.z + (Math.random() - 0.5) * 0.58,
+    );
+    mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+    const initialScale = 0.7 + Math.random() * 0.7;
+    mesh.scale.setScalar(initialScale);
+    runtime.debrisGroup.add(mesh);
+    runtime.debris.push({
+      mesh,
+      velocity: new THREE.Vector3(
+        (Math.random() - 0.5) * 4,
+        2 + Math.random() * 3,
+        (Math.random() - 0.5) * 4,
+      ),
+      angularVelocity: new THREE.Vector3(
+        (Math.random() - 0.5) * 9,
+        (Math.random() - 0.5) * 9,
+        (Math.random() - 0.5) * 9,
+      ),
+      age: 0,
+      lifetime: 1.55 + Math.random() * 0.65,
+      initialScale,
+    });
+  }
+
+  while (runtime.debris.length > 700) {
+    const oldest = runtime.debris.shift();
+    if (oldest) runtime.debrisGroup.remove(oldest.mesh);
+  }
+}
+
+function updateDebris(runtime: Runtime, delta: number): void {
+  for (let index = runtime.debris.length - 1; index >= 0; index -= 1) {
+    const particle = runtime.debris[index];
+    particle.age += delta;
+    if (particle.age >= particle.lifetime) {
+      runtime.debrisGroup.remove(particle.mesh);
+      runtime.debris.splice(index, 1);
+      continue;
+    }
+    particle.velocity.y -= 5.8 * delta;
+    particle.mesh.position.addScaledVector(particle.velocity, delta);
+    particle.mesh.rotation.x += particle.angularVelocity.x * delta;
+    particle.mesh.rotation.y += particle.angularVelocity.y * delta;
+    particle.mesh.rotation.z += particle.angularVelocity.z * delta;
+    const remaining = Math.max(0, 1 - particle.age / particle.lifetime);
+    particle.mesh.scale.setScalar(particle.initialScale * remaining);
+  }
+}
+
+function makeMineUndersideTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = 128;
+  canvas.height = 128;
+  const context = canvas.getContext("2d");
+  if (!context) return new THREE.CanvasTexture(canvas);
+
+  context.clearRect(0, 0, 128, 128);
+  context.beginPath();
+  context.arc(64, 64, 54, 0, Math.PI * 2);
+  context.fillStyle = "#ff5274";
+  context.fill();
+  context.lineWidth = 8;
+  context.strokeStyle = "#ffd5de";
+  context.stroke();
+  context.beginPath();
+  context.arc(61, 70, 29, 0, Math.PI * 2);
+  context.fillStyle = "#07131f";
+  context.fill();
+  context.lineWidth = 8;
+  context.strokeStyle = "#07131f";
+  context.beginPath();
+  context.moveTo(75, 45);
+  context.quadraticCurveTo(88, 25, 101, 39);
+  context.stroke();
+  context.fillStyle = "#f6c453";
+  context.beginPath();
+  context.arc(103, 37, 7, 0, Math.PI * 2);
+  context.fill();
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  return texture;
+}
+
+function normalizeFacing(facing: BoardFacing): Exclude<BoardFacing, number> {
+  return typeof facing === "number"
+    ? (["north", "east", "south", "west"] as const)[((facing % 4) + 4) % 4]
+    : facing;
+}
+
+function facingVector(facing: BoardFacing): Readonly<{ x: number; z: number }> {
+  return {
+    north: { x: 0, z: -1 },
+    east: { x: 1, z: 0 },
+    south: { x: 0, z: 1 },
+    west: { x: -1, z: 0 },
+  }[normalizeFacing(facing)];
+}
+
+function updateFirstPersonCamera(runtime: Runtime, player: ThreeBoardPlayer): void {
+  const vector = facingVector(player.facing);
+  runtime.firstPersonCamera.position.set(player.x, player.footY + 0.78, player.z);
+  runtime.firstPersonCamera.up.set(0, 1, 0);
+  runtime.firstPersonCamera.lookAt(
+    player.x + vector.x,
+    player.footY + 0.7,
+    player.z + vector.z,
+  );
+  runtime.firstPersonCamera.updateMatrixWorld();
+}
+
 function facingAngle(facing: BoardFacing): number {
-  const normalized =
-    typeof facing === "number"
-      ? (["north", "east", "south", "west"] as const)[((facing % 4) + 4) % 4]
-      : facing;
-  return { north: 0, east: -Math.PI / 2, south: Math.PI, west: Math.PI / 2 }[normalized];
+  return { north: 0, east: -Math.PI / 2, south: Math.PI, west: Math.PI / 2 }[
+    normalizeFacing(facing)
+  ];
 }
 
 function makePlayerMaterial(color: number): THREE.MeshStandardMaterial {
@@ -291,7 +477,10 @@ export default function ThreeBoard({
   solidCells,
   flaggedCells,
   numberSurfaces,
+  revealMineLocations = false,
   player,
+  cameraMode,
+  onCameraModeChange,
   validTargetIds,
   activeTargetId,
   onDig,
@@ -303,7 +492,7 @@ export default function ThreeBoard({
   const viewportRef = useRef<HTMLDivElement>(null);
   const runtimeRef = useRef<Runtime | null>(null);
   const callbacksRef = useRef({ onDig, onFlag, onHover });
-  const [cameraMode, setCameraMode] = useState<CameraMode>("oblique");
+  const previousSolidCellsRef = useRef<ReadonlyMap<string, ThreeBoardCell> | null>(null);
 
   useEffect(() => {
     callbacksRef.current = { onDig, onFlag, onHover };
@@ -326,8 +515,8 @@ export default function ThreeBoard({
     renderer.domElement.style.touchAction = "none";
     viewport.appendChild(renderer.domElement);
 
-    const verticalCamera = new THREE.OrthographicCamera(-5, 5, 5, -5, 0.05, 200);
     const obliqueCamera = new THREE.OrthographicCamera(-5, 5, 5, -5, 0.05, 200);
+    const firstPersonCamera = new THREE.PerspectiveCamera(68, 1, 0.04, 80);
     const controls = new OrbitControls(obliqueCamera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.075;
@@ -338,33 +527,55 @@ export default function ThreeBoard({
     controls.minPolarAngle = Math.PI * 0.16;
     controls.maxPolarAngle = Math.PI * 0.47;
 
+    const groundGroup = new THREE.Group();
     const solidGroup = new THREE.Group();
+    const debrisGroup = new THREE.Group();
     const flagGroup = new THREE.Group();
     const numberGroup = new THREE.Group();
     const playerGroup = new THREE.Group();
-    scene.add(solidGroup, flagGroup, numberGroup, playerGroup);
+    scene.add(groundGroup, solidGroup, debrisGroup, flagGroup, numberGroup, playerGroup);
     scene.add(new THREE.HemisphereLight(0xc5ecff, 0x102432, 1.55));
     const keyLight = new THREE.DirectionalLight(0xffffff, 2.1);
     keyLight.position.set(7, 13, 9);
     scene.add(keyLight);
 
+    const blockGeometry = new THREE.BoxGeometry(0.94, 1, 0.94);
     const runtime: Runtime = {
       scene,
       renderer,
-      verticalCamera,
       obliqueCamera,
+      firstPersonCamera,
       activeCamera: obliqueCamera,
       controls,
       raycaster: new THREE.Raycaster(),
       pointer: new THREE.Vector2(),
+      groundGroup,
       solidGroup,
+      debrisGroup,
       flagGroup,
       numberGroup,
       playerGroup,
-      blockGeometry: new THREE.BoxGeometry(0.94, 0.94, 0.94),
+      // Full unit height keeps vertically adjacent layers flush. The horizontal
+      // clearance remains so individual cells are still readable from above.
+      blockGeometry,
+      blockEdgeGeometry: new THREE.EdgesGeometry(blockGeometry),
+      debrisGeometry: new THREE.BoxGeometry(0.17, 0.17, 0.17),
+      debrisMaterials: LAYER_COLORS.map(
+        (color) =>
+          new THREE.MeshStandardMaterial({
+            color,
+            emissive: color,
+            emissiveIntensity: 0.28,
+            roughness: 0.66,
+            metalness: 0.04,
+          }),
+      ),
+      debris: [],
+      mineMarkerGeometry: new THREE.PlaneGeometry(0.72, 0.72),
       cellMeshes: new Map(),
       targetMeshes: new Map(),
       validTargets: new Set(),
+      flaggedIds: new Set(),
       activeTargetId: null,
       center: new THREE.Vector3(),
       span: 8,
@@ -379,8 +590,9 @@ export default function ThreeBoard({
       const height = Math.max(viewport.clientHeight, 1);
       runtime.aspect = width / height;
       renderer.setSize(width, height, false);
-      setFrustum(verticalCamera, runtime.aspect, runtime.span);
       setFrustum(obliqueCamera, runtime.aspect, runtime.span);
+      firstPersonCamera.aspect = runtime.aspect;
+      firstPersonCamera.updateProjectionMatrix();
     };
     resize();
     const resizeObserver = new ResizeObserver(resize);
@@ -434,8 +646,10 @@ export default function ThreeBoard({
     renderer.domElement.addEventListener("contextmenu", handleContextMenu);
 
     let animationFrame = 0;
+    const clock = new THREE.Clock();
     const render = () => {
       animationFrame = window.requestAnimationFrame(render);
+      updateDebris(runtime, Math.min(clock.getDelta(), 0.05));
       if (runtime.activeCamera === runtime.obliqueCamera) controls.update();
       renderer.render(scene, runtime.activeCamera);
     };
@@ -450,11 +664,17 @@ export default function ThreeBoard({
       renderer.domElement.removeEventListener("pointerleave", handlePointerLeave);
       renderer.domElement.removeEventListener("contextmenu", handleContextMenu);
       controls.dispose();
+      clearGroup(groundGroup, true);
       clearGroup(solidGroup, false);
       clearGroup(flagGroup, true);
       clearGroup(numberGroup, false);
       clearGroup(playerGroup, true);
+      debrisGroup.clear();
       runtime.blockGeometry.dispose();
+      runtime.blockEdgeGeometry.dispose();
+      runtime.debrisGeometry.dispose();
+      for (const material of runtime.debrisMaterials) material.dispose();
+      runtime.mineMarkerGeometry.dispose();
       renderer.dispose();
       renderer.forceContextLoss();
       renderer.domElement.remove();
@@ -466,6 +686,16 @@ export default function ThreeBoard({
     const runtime = runtimeRef.current;
     if (!runtime) return;
 
+    const currentCells = new Map(solidCells.map((cell) => [cell.id, cell]));
+    const previousCells = previousSolidCellsRef.current;
+    if (previousCells) {
+      for (const [id, cell] of previousCells) {
+        if (!currentCells.has(id)) spawnBlockDebris(runtime, cell);
+      }
+    }
+    previousSolidCellsRef.current = currentCells;
+
+    buildGround(runtime, solidCells);
     clearGroup(runtime.solidGroup, false);
     runtime.cellMeshes.clear();
     for (const cell of solidCells) {
@@ -481,12 +711,55 @@ export default function ThreeBoard({
       const mesh = new THREE.Mesh(runtime.blockGeometry, material);
       mesh.position.set(cell.x, cell.y, cell.z);
       mesh.userData.cellId = cell.id;
+      const outline = new THREE.LineSegments(
+        runtime.blockEdgeGeometry,
+        new THREE.LineBasicMaterial({
+          color: layerColor(cell.layer),
+          transparent: true,
+          opacity: 0.88,
+          toneMapped: false,
+        }),
+      );
+      outline.renderOrder = 2;
+      mesh.add(outline);
+      if (cell.mine) {
+        const mineMarker = new THREE.Mesh(
+          runtime.mineMarkerGeometry,
+          new THREE.MeshBasicMaterial({
+            map: makeMineUndersideTexture(),
+            transparent: true,
+            side: THREE.FrontSide,
+            depthWrite: false,
+            toneMapped: false,
+          }),
+        );
+        mineMarker.position.y = -0.501;
+        mineMarker.rotation.x = Math.PI / 2;
+        mesh.add(mineMarker);
+
+        if (revealMineLocations) {
+          const revealedMineMarker = new THREE.Mesh(
+            runtime.mineMarkerGeometry,
+            new THREE.MeshBasicMaterial({
+              map: makeMineUndersideTexture(),
+              transparent: true,
+              side: THREE.FrontSide,
+              depthWrite: false,
+              toneMapped: false,
+            }),
+          );
+          revealedMineMarker.position.y = 0.501;
+          revealedMineMarker.rotation.x = -Math.PI / 2;
+          revealedMineMarker.renderOrder = 3;
+          mesh.add(revealedMineMarker);
+        }
+      }
       runtime.solidGroup.add(mesh);
       runtime.cellMeshes.set(cell.id, mesh);
     }
     fitRuntime(runtime, solidCells);
     applyCellAppearance(runtime);
-  }, [solidCells]);
+  }, [solidCells, revealMineLocations]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;
@@ -505,11 +778,13 @@ export default function ThreeBoard({
     const runtime = runtimeRef.current;
     if (!runtime) return;
     clearGroup(runtime.flagGroup, true);
+    runtime.flaggedIds = new Set(flaggedCells.map((cell) => cell.id));
+    applyCellAppearance(runtime);
 
     for (const cell of flaggedCells) {
       if (!runtime.cellMeshes.has(cell.id)) continue;
       const flag = new THREE.Group();
-      flag.position.set(cell.x, cell.y + 0.48, cell.z);
+      flag.position.set(cell.x, cell.y + 0.501, cell.z);
 
       addPlayerPart(
         flag,
@@ -539,7 +814,7 @@ export default function ThreeBoard({
     for (const surface of numberSurfaces) {
       if (surface.value <= 0) continue;
       const material = new THREE.SpriteMaterial({
-        map: makeNumberTexture(surface.value),
+        map: makeNumberTexture(surface.value, surface.layer),
         transparent: true,
         depthTest: false,
         depthWrite: false,
@@ -611,13 +886,17 @@ export default function ThreeBoard({
       }
     });
     runtime.playerGroup.add(dummy);
+    updateFirstPersonCamera(runtime, player);
+    runtime.playerGroup.visible = runtime.activeCamera !== runtime.firstPersonCamera;
   }, [player]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;
     if (!runtime) return;
-    runtime.activeCamera = cameraMode === "vertical" ? runtime.verticalCamera : runtime.obliqueCamera;
+    runtime.activeCamera =
+      cameraMode === "firstPerson" ? runtime.firstPersonCamera : runtime.obliqueCamera;
     runtime.controls.enabled = cameraMode === "oblique";
+    runtime.playerGroup.visible = cameraMode !== "firstPerson";
     runtime.renderer.domElement.style.cursor = cameraMode === "oblique" ? "grab" : "default";
     if (runtime.hoveredId !== null) {
       runtime.hoveredId = null;
@@ -641,20 +920,8 @@ export default function ThreeBoard({
       <div style={cameraPanelStyle} role="group" aria-label="Camera controls">
         <button
           type="button"
-          aria-pressed={cameraMode === "vertical"}
-          onClick={() => setCameraMode("vertical")}
-          style={{
-            ...baseButtonStyle,
-            borderColor: cameraMode === "vertical" ? "#55ead2" : "#456078",
-            color: cameraMode === "vertical" ? "#55ead2" : "#dcecf3",
-          }}
-        >
-          TOP
-        </button>
-        <button
-          type="button"
           aria-pressed={cameraMode === "oblique"}
-          onClick={() => setCameraMode("oblique")}
+          onClick={() => onCameraModeChange("oblique")}
           style={{
             ...baseButtonStyle,
             borderColor: cameraMode === "oblique" ? "#55ead2" : "#456078",
@@ -662,6 +929,19 @@ export default function ThreeBoard({
           }}
         >
           3D
+        </button>
+        <button
+          type="button"
+          aria-pressed={cameraMode === "firstPerson"}
+          aria-label="First-person camera"
+          onClick={() => onCameraModeChange("firstPerson")}
+          style={{
+            ...baseButtonStyle,
+            borderColor: cameraMode === "firstPerson" ? "#55ead2" : "#456078",
+            color: cameraMode === "firstPerson" ? "#55ead2" : "#dcecf3",
+          }}
+        >
+          FP
         </button>
         {cameraMode === "oblique" && (
           <>
