@@ -44,6 +44,9 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
+    // GitHub project Pages are hosted below the repository path. Relative URLs
+    // keep the static export working there without changing local development.
+    base: process.env.GITHUB_ACTIONS === "true" ? "./" : "/",
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,
