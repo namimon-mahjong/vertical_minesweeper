@@ -617,8 +617,11 @@ export function toggleFlag(state: GameState, requested?: TargetKind | Coord): Ga
   return refreshActiveTarget(next);
 }
 
-function columnFootY(state: GameState, x: number, z: number): number {
-  for (let y = state.size.layers - 1; y >= 0; y -= 1) {
+function columnFootYBelow(state: GameState, x: number, z: number, footY: number): number {
+  // A block two or more cells above the current walking level must not turn
+  // into the destination floor. Only the block directly in the player's path
+  // can obstruct lateral movement.
+  for (let y = Math.min(footY - 1, state.size.layers - 1); y >= 0; y -= 1) {
     if (getCell(state, { x, y, z })?.solid) return y + 1;
   }
   return 0;
@@ -635,9 +638,15 @@ function movePlayerInDirection(
   const z = state.player.z + vector.z;
   let player: Player = { ...state.player, facing };
   if (x >= 0 && x < state.size.width && z >= 0 && z < state.size.depth) {
-    const destinationFootY = columnFootY(state, x, z);
-    // Any descent is legal; ascent is limited to one block.
-    if (destinationFootY - state.player.footY <= 1) {
+    const directlyAboveDestination = getCell(state, {
+      x,
+      y: state.player.footY,
+      z,
+    });
+    const destinationFootY = columnFootYBelow(state, x, z, state.player.footY);
+    // Any descent is legal. A block immediately above the walking level
+    // obstructs the path, while blocks two or more cells higher do not.
+    if (!directlyAboveDestination?.solid) {
       player = { x, z, footY: destinationFootY, facing };
     }
   }

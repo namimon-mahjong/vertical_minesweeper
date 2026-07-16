@@ -281,7 +281,7 @@ test("digging support removes the block and makes the player fall", () => {
   assert.equal(twice.player.footY, 1);
 });
 
-test("movement faces world-fixed direction, allows unlimited descent, and blocks a two-step ascent", () => {
+test("movement ignores blocks two cells above the path but blocks a directly overhead block", () => {
   const base = createGame({ mines: [] });
   const cells = base.cells.map((cell) =>
     cell.x === 3 && cell.z === 2 && cell.y >= 1 ? { ...cell, solid: false } : cell,
@@ -289,6 +289,16 @@ test("movement faces world-fixed direction, allows unlimited descent, and blocks
   const fixture: GameState = { ...base, cells };
   const descended = movePlayer(fixture, "north");
   assert.deepEqual(descended.player, { x: 3, z: 2, footY: 1, facing: "north" });
+
+  const withOnlyHighBlock: GameState = {
+    ...descended,
+    cells: descended.cells.map((cell) =>
+      cell.x === 3 && cell.z === 3 && cell.y === 1 ? { ...cell, solid: false } : cell,
+    ),
+  };
+  const passed = movePlayer(withOnlyHighBlock, "south");
+  assert.deepEqual(passed.player, { x: 3, z: 3, footY: 1, facing: "south" });
+
   const blocked = movePlayer(descended, "south");
   assert.deepEqual(blocked.player, { x: 3, z: 2, footY: 1, facing: "south" });
 });
