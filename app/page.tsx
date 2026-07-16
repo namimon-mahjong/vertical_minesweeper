@@ -187,6 +187,7 @@ export default function Home() {
             solidCells={solidCells}
             flaggedCells={flaggedCells}
             numberSurfaces={visibleNumberSurfaces}
+            revealMineLocations={game.status === "lost"}
             player={game.player}
             cameraMode={cameraMode}
             onCameraModeChange={setCameraMode}

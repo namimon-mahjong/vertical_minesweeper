@@ -40,6 +40,8 @@ export interface ThreeBoardProps {
   solidCells: readonly ThreeBoardCell[];
   flaggedCells: readonly ThreeBoardCell[];
   numberSurfaces: readonly ThreeBoardNumberSurface[];
+  /** Shows the mine symbol on every remaining mine after a failed mission. */
+  revealMineLocations?: boolean;
   player: ThreeBoardPlayer;
   cameraMode: ThreeBoardCameraMode;
   onCameraModeChange: (mode: ThreeBoardCameraMode) => void;
@@ -475,6 +477,7 @@ export default function ThreeBoard({
   solidCells,
   flaggedCells,
   numberSurfaces,
+  revealMineLocations = false,
   player,
   cameraMode,
   onCameraModeChange,
@@ -733,13 +736,30 @@ export default function ThreeBoard({
         mineMarker.position.y = -0.501;
         mineMarker.rotation.x = Math.PI / 2;
         mesh.add(mineMarker);
+
+        if (revealMineLocations) {
+          const revealedMineMarker = new THREE.Mesh(
+            runtime.mineMarkerGeometry,
+            new THREE.MeshBasicMaterial({
+              map: makeMineUndersideTexture(),
+              transparent: true,
+              side: THREE.FrontSide,
+              depthWrite: false,
+              toneMapped: false,
+            }),
+          );
+          revealedMineMarker.position.y = 0.501;
+          revealedMineMarker.rotation.x = -Math.PI / 2;
+          revealedMineMarker.renderOrder = 3;
+          mesh.add(revealedMineMarker);
+        }
       }
       runtime.solidGroup.add(mesh);
       runtime.cellMeshes.set(cell.id, mesh);
     }
     fitRuntime(runtime, solidCells);
     applyCellAppearance(runtime);
-  }, [solidCells]);
+  }, [solidCells, revealMineLocations]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;
