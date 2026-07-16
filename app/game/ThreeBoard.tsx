@@ -39,12 +39,14 @@ export interface ThreeBoardPlayer {
 export interface ThreeBoardProps {
   solidCells: readonly ThreeBoardCell[];
   flaggedCells: readonly ThreeBoardCell[];
-  numberSurfaces: readonly ThreeBoardNumberSurface[];
   /** Shows the mine symbol on every remaining mine after a failed mission. */
   revealMineLocations?: boolean;
+  numberSurfaces: readonly ThreeBoardNumberSurface[];
   player: ThreeBoardPlayer;
   cameraMode: ThreeBoardCameraMode;
   onCameraModeChange: (mode: ThreeBoardCameraMode) => void;
+  visibleClueLayers: ReadonlySet<number>;
+  onToggleClueLayer: (layer: number) => void;
   validTargetIds: readonly string[] | ReadonlySet<string>;
   activeTargetId: string | null;
   onDig: (id: string) => void;
@@ -55,6 +57,9 @@ export interface ThreeBoardProps {
 }
 
 export type ThreeBoardCameraMode = "oblique" | "firstPerson";
+
+const DEFAULT_VISIBLE_CLUE_LAYERS: ReadonlySet<number> = new Set([0, 1, 2]);
+const ignoreClueLayerToggle = () => undefined;
 
 interface DebrisParticle {
   mesh: THREE.Mesh<THREE.BoxGeometry, THREE.MeshStandardMaterial>;
@@ -116,7 +121,7 @@ const containerStyle: CSSProperties = {
   position: "relative",
   width: "100%",
   minHeight: 480,
-  overflow: "hidden",
+  overflow: "clip",
   background: "#07131f",
 };
 
@@ -126,12 +131,12 @@ const viewportStyle: CSSProperties = {
 };
 
 const cameraPanelStyle: CSSProperties = {
-  position: "absolute",
+  position: "sticky",
   top: 14,
-  right: 14,
-  zIndex: 2,
-  display: "flex",
-  alignItems: "center",
+  zIndex: 3,
+  width: "max-content",
+  margin: "14px 14px 0 auto",
+  display: "grid",
   gap: 6,
   padding: 6,
   border: "1px solid rgba(142, 177, 196, .35)",
@@ -141,6 +146,12 @@ const cameraPanelStyle: CSSProperties = {
   color: "#eaf6ff",
   font: "600 11px/1 Arial, sans-serif",
   letterSpacing: ".05em",
+};
+
+const cameraRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
 };
 
 const baseButtonStyle: CSSProperties = {
@@ -476,11 +487,13 @@ function addPlayerPart(
 export default function ThreeBoard({
   solidCells,
   flaggedCells,
-  numberSurfaces,
   revealMineLocations = false,
+  numberSurfaces,
   player,
   cameraMode,
   onCameraModeChange,
+  visibleClueLayers = DEFAULT_VISIBLE_CLUE_LAYERS,
+  onToggleClueLayer = ignoreClueLayerToggle,
   validTargetIds,
   activeTargetId,
   onDig,
@@ -917,54 +930,76 @@ export default function ThreeBoard({
   return (
     <div className={className} style={{ ...containerStyle, ...style }}>
       <div ref={viewportRef} style={viewportStyle} aria-label="3D minefield" />
-      <div style={cameraPanelStyle} role="group" aria-label="Camera controls">
-        <button
-          type="button"
-          aria-pressed={cameraMode === "oblique"}
-          onClick={() => onCameraModeChange("oblique")}
-          style={{
-            ...baseButtonStyle,
-            borderColor: cameraMode === "oblique" ? "#55ead2" : "#456078",
-            color: cameraMode === "oblique" ? "#55ead2" : "#dcecf3",
-          }}
-        >
-          3D
-        </button>
-        <button
-          type="button"
-          aria-pressed={cameraMode === "firstPerson"}
-          aria-label="First-person camera"
-          onClick={() => onCameraModeChange("firstPerson")}
-          style={{
-            ...baseButtonStyle,
-            borderColor: cameraMode === "firstPerson" ? "#55ead2" : "#456078",
-            color: cameraMode === "firstPerson" ? "#55ead2" : "#dcecf3",
-          }}
-        >
-          FP
-        </button>
-        {cameraMode === "oblique" && (
-          <>
+      <div style={cameraPanelStyle} aria-label="View controls">
+        <div style={cameraRowStyle} role="group" aria-label="Camera controls">
+          <button
+            type="button"
+            aria-pressed={cameraMode === "oblique"}
+            onClick={() => onCameraModeChange("oblique")}
+            onKeyDown={(event) => event.stopPropagation()}
+            style={{
+              ...baseButtonStyle,
+              borderColor: cameraMode === "oblique" ? "#55ead2" : "#456078",
+              color: cameraMode === "oblique" ? "#55ead2" : "#dcecf3",
+            }}
+          >
+            3D
+          </button>
+          <button
+            type="button"
+            aria-pressed={cameraMode === "firstPerson"}
+            aria-label="First-person camera"
+            onClick={() => onCameraModeChange("firstPerson")}
+            onKeyDown={(event) => event.stopPropagation()}
+            style={{
+              ...baseButtonStyle,
+              borderColor: cameraMode === "firstPerson" ? "#55ead2" : "#456078",
+              color: cameraMode === "firstPerson" ? "#55ead2" : "#dcecf3",
+            }}
+          >
+            FP
+          </button>
+          {cameraMode === "oblique" && (
+            <>
+              <button
+                type="button"
+                onClick={() => rotateOblique(-1)}
+                onKeyDown={(event) => event.stopPropagation()}
+                aria-label="Rotate camera left 45 degrees"
+                title="Rotate left"
+                style={baseButtonStyle}
+              >
+                ↺
+              </button>
+              <button
+                type="button"
+                onClick={() => rotateOblique(1)}
+                onKeyDown={(event) => event.stopPropagation()}
+                aria-label="Rotate camera right 45 degrees"
+                title="Rotate right"
+                style={baseButtonStyle}
+              >
+                ↻
+              </button>
+            </>
+          )}
+        </div>
+        <div className="view-clue-controls" role="group" aria-label="Clue layer visibility">
+          <span>CLUES</span>
+          {[2, 1, 0].map((layer) => (
             <button
+              key={layer}
               type="button"
-              onClick={() => rotateOblique(-1)}
-              aria-label="Rotate camera left 45 degrees"
-              title="Rotate left"
-              style={baseButtonStyle}
+              className={`view-layer-toggle layer-${layer + 1}`}
+              aria-label={`Layer ${layer + 1} clues`}
+              aria-pressed={visibleClueLayers.has(layer)}
+              onClick={() => onToggleClueLayer(layer)}
+              onKeyDown={(event) => event.stopPropagation()}
             >
-              ↺
+              <i />L{layer + 1}
             </button>
-            <button
-              type="button"
-              onClick={() => rotateOblique(1)}
-              aria-label="Rotate camera right 45 degrees"
-              title="Rotate right"
-              style={baseButtonStyle}
-            >
-              ↻
-            </button>
-          </>
-        )}
+          ))}
+        </div>
       </div>
     </div>
   );

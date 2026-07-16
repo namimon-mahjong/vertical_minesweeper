@@ -35,6 +35,7 @@ export default function Home() {
   const [game, setGame] = useState<GameState>(() => createGame({ seed: 0x44454550 }));
   const [cameraMode, setCameraMode] = useState<ThreeBoardCameraMode>("oblique");
   const [boardSession, setBoardSession] = useState(0);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [difficulty, setDifficulty] = useState<Difficulty>("normal");
   const [stageLayout, setStageLayout] = useState<StageLayout>("stacked");
   const [visibleClueLayers, setVisibleClueLayers] = useState<ReadonlySet<number>>(
@@ -110,6 +111,7 @@ export default function Home() {
     setGame(createGame({ seed: createSessionSeed(), difficulty, layout: stageLayout }));
     setCameraMode("oblique");
     setVisibleClueLayers(new Set([0, 1, 2]));
+    setMenuOpen(false);
     // Remounting clears every Three.js mesh, particle, hover and camera value
     // from the previous run before the selected stage is rebuilt from scratch.
     setBoardSession((current) => current + 1);
@@ -164,8 +166,6 @@ export default function Home() {
 
   const mineCount = remainingMineBlocks(game);
   const flagCount = game.cells.filter((cell) => cell.flagged).length;
-  const statusText =
-    game.status === "lost" ? "MINE DETONATED" : game.status === "won" ? "FIELD CLEARED" : "SECTOR ACTIVE";
 
   return (
     <main className="app-shell">
@@ -177,9 +177,6 @@ export default function Home() {
         <div className="stat"><b>{mineCount}</b><small>MINES</small></div>
         <div className="stat"><b>{flagCount}</b><small>FLAGS</small></div>
         <div className="stat"><b>{remainingSafeBlocks(game)}</b><small>SAFE BLOCKS</small></div>
-        <button className="new-field" type="button" onClick={startNewField}>
-          NEW FIELD
-        </button>
       </header>
 
       <section className="game-layout">
@@ -188,11 +185,13 @@ export default function Home() {
             key={boardSession}
             solidCells={solidCells}
             flaggedCells={flaggedCells}
-            numberSurfaces={visibleNumberSurfaces}
             revealMineLocations={game.status === "lost"}
+            numberSurfaces={visibleNumberSurfaces}
             player={game.player}
             cameraMode={cameraMode}
             onCameraModeChange={setCameraMode}
+            visibleClueLayers={visibleClueLayers}
+            onToggleClueLayer={toggleClueLayer}
             validTargetIds={targetIds}
             activeTargetId={activeTargetId ? cellId(activeTargetId) : null}
             onDig={(id) => actOnId(id, "dig")}
@@ -206,90 +205,71 @@ export default function Home() {
               <button type="button" onClick={startNewField}>TRY AGAIN</button>
             </div>
           )}
+          <details
+            className="game-menu"
+            open={menuOpen}
+            onToggle={(event) => setMenuOpen(event.currentTarget.open)}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
+            <summary aria-label="Open game menu">MENU</summary>
+            <div className="game-menu-panel">
+              <div className="stage-setup" aria-label="Next field setup">
+                <strong>NEW FIELD</strong>
+                <span className="setup-label">DIFFICULTY</span>
+                <div className="setup-buttons" role="group" aria-label="Difficulty">
+                  {(["easy", "normal", "hard"] as const).map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      className={`setup-toggle difficulty-${option}`}
+                      aria-label={`${option} difficulty`}
+                      aria-pressed={difficulty === option}
+                      onClick={() => setDifficulty(option)}
+                    >
+                      {option.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+                <span className="setup-label">LAYOUT</span>
+                <div className="setup-buttons layout-buttons" role="group" aria-label="Stage layout">
+                  {(
+                    [
+                      ["stacked", "STACKED"],
+                      ["pyramid", "PYRAMID"],
+                    ] as const
+                  ).map(([option, label]) => (
+                    <button
+                      key={option}
+                      type="button"
+                      className="setup-toggle"
+                      aria-label={`${label.toLowerCase()} stage`}
+                      aria-pressed={stageLayout === option}
+                      onClick={() => setStageLayout(option)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <small>
+                  Current: {game.setup.difficulty.toUpperCase()} / {game.setup.layout.toUpperCase()}
+                </small>
+                <button className="new-field menu-new-field" type="button" onClick={startNewField}>
+                  START NEW FIELD
+                </button>
+              </div>
+              <div className="command-reference">
+                <strong>COMMANDS</strong>
+                <p><kbd>W / ↑</kbd> Advance · <kbd>S / ↓</kbd> Retreat<br /><kbd>A D / ← →</kbd> Turn 90°</p>
+                <p><kbd>SPACE</kbd> / <kbd>LEFT CLICK</kbd><br />Excavate the highlighted block</p>
+                <p><kbd>SHIFT</kbd> / <kbd>RIGHT CLICK</kbd><br />Toggle a flag</p>
+                <div className="legend">
+                  <span><i className="swatch valid" /> Valid target</span>
+                  <span><i className="swatch active" /> Active target</span>
+                </div>
+              </div>
+            </div>
+          </details>
         </div>
-
-        <aside className="instructions">
-          <div className="status"><i className={game.status} /> {statusText}</div>
-          <div className="target-readout">
-            <span>ACTIVE TARGET</span>
-            <b>{game.activeTarget?.toUpperCase() ?? "NONE"}</b>
-          </div>
-          <div className="stage-setup" aria-label="Next field setup">
-            <strong>NEXT FIELD</strong>
-            <span className="setup-label">DIFFICULTY</span>
-            <div className="setup-buttons" role="group" aria-label="Difficulty">
-              {(["easy", "normal", "hard"] as const).map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  className={`setup-toggle difficulty-${option}`}
-                  aria-label={`${option} difficulty`}
-                  aria-pressed={difficulty === option}
-                  onClick={() => setDifficulty(option)}
-                  onKeyDown={(event) => event.stopPropagation()}
-                >
-                  {option.toUpperCase()}
-                </button>
-              ))}
-            </div>
-            <span className="setup-label">LAYOUT</span>
-            <div className="setup-buttons layout-buttons" role="group" aria-label="Stage layout">
-              {(
-                [
-                  ["stacked", "STACKED"],
-                  ["pyramid", "PYRAMID"],
-                ] as const
-              ).map(([option, label]) => (
-                <button
-                  key={option}
-                  type="button"
-                  className="setup-toggle"
-                  aria-label={`${label.toLowerCase()} stage`}
-                  aria-pressed={stageLayout === option}
-                  onClick={() => setStageLayout(option)}
-                  onKeyDown={(event) => event.stopPropagation()}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <small>
-              Current: {game.setup.difficulty.toUpperCase()} / {game.setup.layout.toUpperCase()}
-            </small>
-          </div>
-          <h2>COMMANDS</h2>
-          <p><kbd>W / ↑</kbd> Advance · <kbd>S / ↓</kbd> Retreat<br /><kbd>A D / ← →</kbd> Turn 90°</p>
-          <p><kbd>SPACE</kbd> / <kbd>LEFT CLICK</kbd><br />Excavate the active highlighted block</p>
-          <p><kbd>SHIFT</kbd> / <kbd>RIGHT CLICK</kbd><br />Toggle a flag on a highlighted block</p>
-          <div className="legend">
-            <span><i className="swatch valid" /> Valid target</span>
-            <span><i className="swatch active" /> Active target</span>
-          </div>
-          <div className="layer-visibility" role="group" aria-label="Clue layer visibility">
-            <strong>CLUE LAYERS</strong>
-            <div className="layer-buttons">
-              {[2, 1, 0].map((layer) => {
-                const visible = visibleClueLayers.has(layer);
-                return (
-                  <button
-                    key={layer}
-                    type="button"
-                    className={`layer-toggle layer-${layer + 1}`}
-                    aria-pressed={visible}
-                    onClick={() => toggleClueLayer(layer)}
-                    onKeyDown={(event) => event.stopPropagation()}
-                  >
-                    <i className={`swatch layer-${layer + 1}`} />
-                    Layer {layer + 1}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          <div className="rule">
-            <strong>FIELD RULE</strong><br />Climb one level at most. Descend or fall any distance. Mines are generated on the first excavation of each layer, and that first block is always safe. Same-height blocks can be selected in all four directions. A diagonal upper block can be excavated from any of four directions only when the space below it is open. Mine blocks carry a warning mark on their underside. Correctly flag every mine on a floor to purge that floor.
-          </div>
-        </aside>
       </section>
     </main>
   );
