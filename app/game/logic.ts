@@ -3,7 +3,7 @@
 export const DEFAULT_BOARD_SIZE = { width: 7, depth: 7, layers: 3 } as const;
 
 export type Direction = "north" | "east" | "south" | "west";
-export type Difficulty = "easy" | "normal" | "hard";
+export type Difficulty = "easy" | "normal" | "hard" | "veryHard";
 export type StageLayout = "stacked" | "pyramid";
 export type TargetKind =
   | "front"
@@ -141,24 +141,28 @@ const PYRAMID_MINE_DENSITY: Readonly<Record<Difficulty, number>> = {
   easy: 0.08,
   normal: 0.12,
   hard: 0.18,
+  veryHard: 0.22,
 };
 
 const STACKED_MINE_DENSITY: Readonly<Record<Difficulty, number>> = {
   easy: 0.1,
   normal: 0.15,
   hard: 0.2,
+  veryHard: 0.25,
 };
 
 const STACKED_SIDE: Readonly<Record<Difficulty, number>> = {
   easy: 7,
   normal: 9,
   hard: 11,
+  veryHard: 13,
 };
 
 const PYRAMID_TOP_SIDE: Readonly<Record<Difficulty, number>> = {
   easy: 3,
   normal: 5,
   hard: 7,
+  veryHard: 9,
 };
 
 function assertPositiveInteger(value: number, name: string): void {
@@ -239,7 +243,12 @@ function generateLayerMines(
   excluded: Coord,
 ): Coord[] {
   const coords = playableCoords(size, layout).filter(
-    (coord) => coord.y === layer && !sameCoord(coord, excluded),
+    (coord) =>
+      coord.y === layer &&
+      !sameCoord(coord, excluded) &&
+      // From the second floor up, the first excavation opens a complete
+      // horizontal safety zone: the clicked cell plus all eight neighbours.
+      (layer === 0 || Math.abs(coord.x - excluded.x) > 1 || Math.abs(coord.z - excluded.z) > 1),
   );
   const random = seededRandom((seed ^ Math.imul(layer + 1, 0x9e3779b9)) >>> 0);
   for (let index = coords.length - 1; index > 0; index -= 1) {
@@ -600,6 +609,7 @@ export function toggleFlag(state: GameState, requested?: TargetKind | Coord): Ga
     (cell) => cell.y === target.coord.y && cell.solid && cell.flagged && !cell.mine,
   );
   if (
+    state.setup.difficulty !== "veryHard" &&
     remainingLayerMines.length > 0 &&
     !hasIncorrectFlag &&
     remainingLayerMines.every((cell) => cell.flagged)
@@ -617,11 +627,10 @@ export function toggleFlag(state: GameState, requested?: TargetKind | Coord): Ga
   return refreshActiveTarget(next);
 }
 
-function columnFootYBelow(state: GameState, x: number, z: number, footY: number): number {
-  // A block two or more cells above the current walking level must not turn
-  // into the destination floor. Only the block directly in the player's path
-  // can obstruct lateral movement.
-  for (let y = Math.min(footY - 1, state.size.layers - 1); y >= 0; y -= 1) {
+function columnFootYWithinStep(state: GameState, x: number, z: number, footY: number): number {
+  // A destination can be one level higher, but blocks above that candidate
+  // floor must not be mistaken for its surface.
+  for (let y = Math.min(footY, state.size.layers - 1); y >= 0; y -= 1) {
     if (getCell(state, { x, y, z })?.solid) return y + 1;
   }
   return 0;
@@ -638,14 +647,15 @@ function movePlayerInDirection(
   const z = state.player.z + vector.z;
   let player: Player = { ...state.player, facing };
   if (x >= 0 && x < state.size.width && z >= 0 && z < state.size.depth) {
+    const destinationFootY = columnFootYWithinStep(state, x, z, state.player.footY);
     const directlyAboveDestination = getCell(state, {
       x,
-      y: state.player.footY,
+      y: destinationFootY,
       z,
     });
-    const destinationFootY = columnFootYBelow(state, x, z, state.player.footY);
-    // Any descent is legal. A block immediately above the walking level
-    // obstructs the path, while blocks two or more cells higher do not.
+    // Any descent is legal and a one-level ascent is allowed. A block directly
+    // above the destination blocks the path, while blocks two or more cells
+    // higher do not.
     if (!directlyAboveDestination?.solid) {
       player = { x, z, footY: destinationFootY, facing };
     }

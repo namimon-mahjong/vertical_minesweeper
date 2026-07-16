@@ -38,6 +38,7 @@ test("stacked difficulty increases both board size and mine density", () => {
     easy: { side: 7, mines: 15 },
     normal: { side: 9, mines: 36 },
     hard: { side: 11, mines: 72 },
+    veryHard: { side: 13, mines: 126 },
   } as const;
   for (const [difficulty, fixture] of Object.entries(expected)) {
     const state = createGame({ difficulty: difficulty as keyof typeof expected, seed: 17 });
@@ -81,7 +82,7 @@ test("pyramid apex grows from 3x3 to 5x5 to 7x7 with difficulty", () => {
 
 test("pyramid mines are generated only inside its playable footprint", () => {
   const expectedMines = {
-    easy: { total: 7, top: 1 },
+    easy: { total: 7, top: 0 },
     normal: { total: 19, top: 3 },
     hard: { total: 46, top: 9 },
   } as const;
@@ -118,11 +119,12 @@ test("pyramid mines are generated only inside its playable footprint", () => {
   );
 });
 
-test("the first dig on every procedural layer is safe", () => {
+test("the first dig is safe and upper layers protect all eight neighbours", () => {
   const state = createGame({
-    size: { width: 3, depth: 3, layers: 2 },
+    size: { width: 5, depth: 5, layers: 2 },
     difficulty: "hard",
     layout: "stacked",
+    mineCount: 4,
     seed: 31,
   });
   assert.deepEqual(state.generatedLayers, [false, false]);
@@ -132,7 +134,11 @@ test("the first dig on every procedural layer is safe", () => {
   const topDig = dig(state, "down");
   assert.equal(topDig.status, "playing");
   assert.deepEqual(topDig.generatedLayers, [false, true]);
-  assert.equal(getCell(topDig, { x: 1, y: 1, z: 1 })?.mine, false);
+  for (let z = 1; z <= 3; z += 1) {
+    for (let x = 1; x <= 3; x += 1) {
+      assert.equal(getCell(topDig, { x, y: 1, z })?.mine, false);
+    }
+  }
   assert.equal(topDig.cells.filter((cell) => cell.y === 1 && cell.mine).length, 2);
   assert.equal(topDig.player.footY, 1);
 
@@ -299,6 +305,15 @@ test("movement ignores blocks two cells above the path but blocks a directly ove
   const passed = movePlayer(withOnlyHighBlock, "south");
   assert.deepEqual(passed.player, { x: 3, z: 3, footY: 1, facing: "south" });
 
+  const withOneStepUp: GameState = {
+    ...descended,
+    cells: descended.cells.map((cell) =>
+      cell.x === 3 && cell.z === 3 && cell.y === 2 ? { ...cell, solid: false } : cell,
+    ),
+  };
+  const climbed = movePlayer(withOneStepUp, "south");
+  assert.deepEqual(climbed.player, { x: 3, z: 3, footY: 2, facing: "south" });
+
   const blocked = movePlayer(descended, "south");
   assert.deepEqual(blocked.player, { x: 3, z: 2, footY: 1, facing: "south" });
 });
@@ -404,6 +419,40 @@ test("correctly flagging every mine clears only that floor", () => {
   assert.equal(getCell(cleared, { x: 1, y: 0, z: 1 })?.solid, true);
   // Clues retain the original floor layout even after correctly flagged mines are purged.
   assert.equal(countAdjacentMines(cleared, { x: 1, y: 1, z: 1 }), 2);
+});
+
+test("very hard keeps flagged mines and clears only after every safe block is removed", () => {
+  const flagsFixture = createGame({
+    difficulty: "veryHard",
+    size: { width: 3, depth: 3, layers: 2 },
+    mines: [
+      { x: 1, y: 1, z: 0 },
+      { x: 2, y: 1, z: 1 },
+    ],
+  });
+  const onceFlagged = toggleFlag(flagsFixture, "frontDown");
+  const allFlagged = toggleFlag(onceFlagged, "rightDown");
+  assert.equal(getCell(allFlagged, { x: 1, y: 1, z: 0 })?.solid, true);
+  assert.equal(getCell(allFlagged, { x: 2, y: 1, z: 1 })?.solid, true);
+  assert.equal(getCell(allFlagged, { x: 1, y: 1, z: 0 })?.flagged, true);
+  assert.equal(getCell(allFlagged, { x: 2, y: 1, z: 1 })?.flagged, true);
+
+  const clearFixture = createGame({
+    difficulty: "veryHard",
+    size: { width: 3, depth: 3, layers: 1 },
+    mines: [{ x: 1, y: 0, z: 0 }],
+  });
+  const finalSafeBlock: GameState = {
+    ...clearFixture,
+    cells: clearFixture.cells.map((cell) =>
+      cell.mine || (cell.x === 2 && cell.y === 0 && cell.z === 1)
+        ? cell
+        : { ...cell, solid: false },
+    ),
+  };
+  const cleared = dig(finalSafeBlock, "rightDown");
+  assert.equal(cleared.status, "won");
+  assert.equal(getCell(cleared, { x: 1, y: 0, z: 0 })?.solid, true);
 });
 
 test("an incorrect flag blocks a floor purge until it is removed", () => {

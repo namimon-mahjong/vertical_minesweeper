@@ -34,6 +34,7 @@ h1 span { color: #f6c453; }
 .setup-toggle.difficulty-easy[aria-pressed="true"] { border-color: #75e4d4; color: #75e4d4; }
 .setup-toggle.difficulty-normal[aria-pressed="true"] { border-color: #f6c453; color: #f6c453; }
 .setup-toggle.difficulty-hard[aria-pressed="true"] { border-color: #ff6f91; color: #ff6f91; }
+.setup-toggle.difficulty-veryHard[aria-pressed="true"] { border-color: #c27cff; color: #d9b0ff; }
 .setup-toggle:focus-visible { outline: 2px solid #eaf6ff; outline-offset: 2px; }
 .stage-setup small { display: block; margin-top: 12px; color: #647f92; font-size: 8px; letter-spacing: .08em; }
 .menu-new-field { width: 100%; margin-top: 14px; }

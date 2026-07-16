@@ -217,16 +217,16 @@ export default function Home() {
                 <strong>NEW FIELD</strong>
                 <span className="setup-label">DIFFICULTY</span>
                 <div className="setup-buttons" role="group" aria-label="Difficulty">
-                  {(["easy", "normal", "hard"] as const).map((option) => (
+                  {(["easy", "normal", "hard", "veryHard"] as const).map((option) => (
                     <button
                       key={option}
                       type="button"
                       className={`setup-toggle difficulty-${option}`}
-                      aria-label={`${option} difficulty`}
+                      aria-label={`${option === "veryHard" ? "very hard" : option} difficulty`}
                       aria-pressed={difficulty === option}
                       onClick={() => setDifficulty(option)}
                     >
-                      {option.toUpperCase()}
+                      {option === "veryHard" ? "VERY HARD" : option.toUpperCase()}
                     </button>
                   ))}
                 </div>
