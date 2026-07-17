@@ -38,6 +38,7 @@ export default function Home() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [difficulty, setDifficulty] = useState<Difficulty>("normal");
   const [stageLayout, setStageLayout] = useState<StageLayout>("stacked");
+  const [touchAction, setTouchAction] = useState<"dig" | "flag">("dig");
   const [visibleClueLayers, setVisibleClueLayers] = useState<ReadonlySet<number>>(
     () => new Set([0, 1, 2]),
   );
@@ -194,11 +195,38 @@ export default function Home() {
             onToggleClueLayer={toggleClueLayer}
             validTargetIds={targetIds}
             activeTargetId={activeTargetId ? cellId(activeTargetId) : null}
+            touchAction={touchAction}
             onDig={(id) => actOnId(id, "dig")}
             onFlag={(id) => actOnId(id, "flag")}
             onHover={handleHover}
             className="three-board"
           />
+          <div className="mobile-controls" aria-label="Touch controls">
+            <div className="mobile-movement" role="group" aria-label="Player movement">
+              <button type="button" aria-label="Turn left" onClick={() => setGame((current) => turnPlayer(current, -1))}>↶</button>
+              <button type="button" aria-label="Move forward" onClick={() => setGame((current) => movePlayerRelative(current, 1))}>↑</button>
+              <button type="button" aria-label="Turn right" onClick={() => setGame((current) => turnPlayer(current, 1))}>↷</button>
+              <button type="button" aria-label="Move backward" onClick={() => setGame((current) => movePlayerRelative(current, -1))}>↓</button>
+            </div>
+            <div className="mobile-actions" role="group" aria-label="Block action">
+              <button
+                type="button"
+                className={touchAction === "dig" ? "selected" : undefined}
+                aria-pressed={touchAction === "dig"}
+                onClick={() => setTouchAction("dig")}
+              >
+                DIG
+              </button>
+              <button
+                type="button"
+                className={touchAction === "flag" ? "selected flag" : "flag"}
+                aria-pressed={touchAction === "flag"}
+                onClick={() => setTouchAction("flag")}
+              >
+                FLAG
+              </button>
+            </div>
+          </div>
           {game.status !== "playing" && (
             <div className={`game-result ${game.status}`} role="status">
               <strong>{game.status === "won" ? "FIELD CLEARED" : "MISSION FAILED"}</strong>

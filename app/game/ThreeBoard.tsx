@@ -49,6 +49,8 @@ export interface ThreeBoardProps {
   onToggleClueLayer: (layer: number) => void;
   validTargetIds: readonly string[] | ReadonlySet<string>;
   activeTargetId: string | null;
+  /** The primary touch action selected by the mobile action bar. */
+  touchAction?: "dig" | "flag";
   onDig: (id: string) => void;
   onFlag: (id: string) => void;
   onHover: (id: string | null) => void;
@@ -496,6 +498,7 @@ export default function ThreeBoard({
   onToggleClueLayer = ignoreClueLayerToggle,
   validTargetIds,
   activeTargetId,
+  touchAction = "dig",
   onDig,
   onFlag,
   onHover,
@@ -505,11 +508,16 @@ export default function ThreeBoard({
   const viewportRef = useRef<HTMLDivElement>(null);
   const runtimeRef = useRef<Runtime | null>(null);
   const callbacksRef = useRef({ onDig, onFlag, onHover });
+  const touchActionRef = useRef(touchAction);
   const previousSolidCellsRef = useRef<ReadonlyMap<string, ThreeBoardCell> | null>(null);
 
   useEffect(() => {
     callbacksRef.current = { onDig, onFlag, onHover };
   }, [onDig, onFlag, onHover]);
+
+  useEffect(() => {
+    touchActionRef.current = touchAction;
+  }, [touchAction]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -623,11 +631,46 @@ export default function ThreeBoard({
       return (hits[0]?.object.userData.cellId as string | undefined) ?? null;
     };
 
-    let pointerDown: { x: number; y: number; button: number } | null = null;
+    let pointerDown: {
+      x: number;
+      y: number;
+      button: number;
+      id: string | null;
+      longPressTriggered: boolean;
+      longPressTimer: number | null;
+    } | null = null;
+    const cancelLongPress = () => {
+      if (pointerDown && pointerDown.longPressTimer !== null) {
+        window.clearTimeout(pointerDown.longPressTimer);
+        pointerDown.longPressTimer = null;
+      }
+    };
     const handlePointerDown = (event: PointerEvent) => {
-      pointerDown = { x: event.clientX, y: event.clientY, button: event.button };
+      const id = targetAt(event);
+      pointerDown = {
+        x: event.clientX,
+        y: event.clientY,
+        button: event.button,
+        id,
+        longPressTriggered: false,
+        longPressTimer: null,
+      };
+      // A long touch is the mobile equivalent of a right click. It is kept
+      // separate from a tap so accidental camera drags never place a flag.
+      if (event.pointerType === "touch" && id) {
+        pointerDown.longPressTimer = window.setTimeout(() => {
+          if (!pointerDown?.id || pointerDown.longPressTriggered) return;
+          pointerDown.longPressTriggered = true;
+          pointerDown.longPressTimer = null;
+          callbacksRef.current.onFlag(pointerDown.id);
+          navigator.vibrate?.(18);
+        }, 450);
+      }
     };
     const handlePointerMove = (event: PointerEvent) => {
+      if (pointerDown && Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > 8) {
+        cancelLongPress();
+      }
       const id = targetAt(event);
       if (id === runtime.hoveredId) return;
       runtime.hoveredId = id;
@@ -637,15 +680,21 @@ export default function ThreeBoard({
     };
     const handlePointerUp = (event: PointerEvent) => {
       const down = pointerDown;
+      cancelLongPress();
       pointerDown = null;
       if (!down || down.button !== event.button) return;
+      if (down.longPressTriggered) return;
       if (Math.hypot(event.clientX - down.x, event.clientY - down.y) > 5) return;
       const id = targetAt(event);
       if (!id) return;
-      if (event.button === 0) callbacksRef.current.onDig(id);
+      if (event.button === 0) {
+        if (event.pointerType === "touch" && touchActionRef.current === "flag") callbacksRef.current.onFlag(id);
+        else callbacksRef.current.onDig(id);
+      }
       if (event.button === 2) callbacksRef.current.onFlag(id);
     };
     const handlePointerLeave = () => {
+      cancelLongPress();
       pointerDown = null;
       if (runtime.hoveredId === null) return;
       runtime.hoveredId = null;
